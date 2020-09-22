@@ -72,7 +72,7 @@ func (guild *GuildState) handleTrackedMembers(dg *discordgo.Session, inGame bool
 
 	updateMade := false
 	for _, voiceState := range g.VoiceStates {
-		guild.UserDataLock.Lock()
+		// guild.UserDataLock.Lock()
 		if userData, ok := guild.UserData[voiceState.UserID]; ok {
 			shouldMute, shouldDeaf := getVoiceStateChanges(guild, userData, voiceState.ChannelID)
 
@@ -99,7 +99,7 @@ func (guild *GuildState) handleTrackedMembers(dg *discordgo.Session, inGame bool
 				}
 			}
 		}
-		guild.UserDataLock.Unlock()
+		// guild.UserDataLock.Unlock()
 	}
 	if updateMade {
 		log.Println("Updating state message")
@@ -116,11 +116,16 @@ func (guild *GuildState) verifyVoiceStateChanges(s *discordgo.Session) {
 		log.Println(err)
 	}
 	for _, voiceState := range g.VoiceStates {
-		if userData, ok := guild.UserData[voiceState.UserID]; ok {
+		guild.UserDataLock.RLock();
+		userData, ok := guild.UserData[voiceState.UserID];
+		guild.UserDataLock.RUnlock();
+		if ok {
 			mute, deaf := getVoiceStateChanges(guild, userData, voiceState.ChannelID)
 			if userData.pendingVoiceUpdate && voiceState.Mute == mute && voiceState.Deaf == deaf {
 				userData.pendingVoiceUpdate = false
+				guild.UserDataLock.Lock();
 				guild.UserData[voiceState.UserID] = userData
+				guild.UserDataLock.Unlock();
 				log.Println("Successfully updated pendingVoice")
 			}
 		}
