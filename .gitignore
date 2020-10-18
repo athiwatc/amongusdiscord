@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+/amongusdiscord
 
 # Test binary, built with `go test -c`
 *.test
@@ -14,8 +15,21 @@
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
+# json config files
+*.json
+
+.idea/
+
+# config files
+config.txt
 final.txt
 final.env
+config.txt
+
+# logs file
+logs.txt
+
+# remnant from when the project used tesseract
 temp.png
 discuss.png
 ending.png
