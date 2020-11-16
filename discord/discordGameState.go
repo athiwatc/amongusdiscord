@@ -20,8 +20,11 @@ func (tc TrackingChannel) ToStatusString(sett *storage.GuildSettings) string {
 	if tc.ChannelID == "" || tc.ChannelName == "" {
 		return sett.LocalizeMessage(&i18n.Message{
 			ID:    "discordGameState.ToStatusString.anyVoiceChannel",
-			Other: "**No Voice Channel! Use `.au track`!**",
-		})
+			Other: "**No Voice Channel! Use `{{.CommandPrefix}} track`!**",
+		},
+			map[string]interface{}{
+				"CommandPrefix": sett.CommandPrefix,
+			})
 	} else {
 		return tc.ChannelName
 	}
@@ -31,8 +34,11 @@ func (tc TrackingChannel) ToDescString(sett *storage.GuildSettings) string {
 	if tc.ChannelID == "" || tc.ChannelName == "" {
 		return sett.LocalizeMessage(&i18n.Message{
 			ID:    "discordGameState.ToDescString.anyVoiceChannel",
-			Other: "**no Voice Channel! Use `.au track`!**",
-		})
+			Other: "**no Voice Channel! Use `{{.CommandPrefix}} track`!**",
+		},
+			map[string]interface{}{
+				"CommandPrefix": sett.CommandPrefix,
+			})
 	} else {
 		return sett.LocalizeMessage(&i18n.Message{
 			ID:    "discordGameState.ToDescString.voiceChannelName",
@@ -53,6 +59,11 @@ type DiscordGameState struct {
 	Running    bool `json:"running"`
 	Subscribed bool `json:"subscribed"`
 
+	MatchID        int64             `json:"matchID"`
+	MatchStartUnix int64             `json:"matchStartUnix"`
+	Winners        []game.GameWinner `json:"winners"`
+	GameResult     game.GameResult   `json:"gameResult"`
+
 	UserData UserDataSet     `json:"userData"`
 	Tracking TrackingChannel `json:"tracking"`
 
@@ -62,23 +73,21 @@ type DiscordGameState struct {
 }
 
 func NewDiscordGameState(guildID string) *DiscordGameState {
-	return &DiscordGameState{
-		GuildID:      guildID,
-		ConnectCode:  "",
-		Linked:       false,
-		Running:      false,
-		Subscribed:   false,
-		UserData:     UserDataSet{},
-		Tracking:     TrackingChannel{},
-		GameStateMsg: MakeGameStateMessage(),
-		AmongUsData:  game.NewAmongUsData(),
-	}
+	dgs := DiscordGameState{GuildID: guildID}
+	dgs.Reset()
+	return &dgs
 }
 
 func (dgs *DiscordGameState) Reset() {
+	//Explicitly does not reset the GuildID!
 	dgs.ConnectCode = ""
 	dgs.Linked = false
 	dgs.Running = false
+	dgs.Subscribed = false
+	dgs.MatchID = -1
+	dgs.MatchStartUnix = -1
+	dgs.Winners = []game.GameWinner{}
+	dgs.GameResult = -1
 	dgs.UserData = map[string]UserData{}
 	dgs.Tracking = TrackingChannel{}
 	dgs.GameStateMsg = MakeGameStateMessage()

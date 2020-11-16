@@ -12,18 +12,23 @@ import (
 	"golang.org/x/text/language"
 )
 
-const localesDir = "locales/"
 const DefaultLang = "en"
+
+var LocalePath = ""
 
 var defaultBotLang string
 var bundleInstance *i18n.Bundle
 
 var localeLanguages = make(map[string]string)
 
-func InitLang(lang string) {
+func InitLang(localePath, lang string) {
 	defaultBotLang = lang
 	if defaultBotLang == "" {
 		defaultBotLang = DefaultLang
+	}
+	LocalePath = localePath
+	if localePath == "" {
+		LocalePath = "locales/"
 	}
 	GetBundle()
 }
@@ -47,14 +52,14 @@ func LoadTranslations() *i18n.Bundle {
 	localeLanguages[DefaultLang] = language.Make(DefaultLang).String()
 
 	defaultBotLangLoaded := defaultBotLang == DefaultLang
-	files, err := ioutil.ReadDir(localesDir)
+	files, err := ioutil.ReadDir(LocalePath)
 	if err == nil {
 		re := regexp.MustCompile(`^active\.(?P<lang>.*)\.toml$`)
 		for _, file := range files {
 			if match := re.FindStringSubmatch(file.Name()); match != nil {
 				fileLang := match[re.SubexpIndex("lang")]
 
-				if _, err := bundle.LoadMessageFile(path.Join(localesDir, file.Name())); err != nil {
+				if _, err := bundle.LoadMessageFile(path.Join(LocalePath, file.Name())); err != nil {
 					if defaultBotLang != DefaultLang && fileLang != DefaultLang {
 						log.Println("[Locale] Eroor load message file:", err)
 					}
@@ -94,18 +99,33 @@ func LocalizeMessage(args ...interface{}) string {
 	var templateData map[string]interface{}
 	lang := defaultBotLang
 	message := args[0].(*i18n.Message)
+	var pluralCount interface{} = nil
 
-	// omgg
+	// omgg, rework this
+
+	// 1
 	if len(args[1:]) > 0 {
 		if model, ok := args[1].(map[string]interface{}); ok {
 			templateData = model
 		} else if model, ok := args[1].(string); ok {
 			lang = model
+		} else if model, ok := args[1].(int); ok {
+			pluralCount = model
 		}
 
-		if len(args[1:]) > 1 {
+		// 2
+		if len(args[2:]) > 0 {
 			if model, ok := args[2].(string); ok {
 				lang = model
+			} else if model, ok := args[2].(int); ok {
+				pluralCount = model
+			}
+
+			// 3
+			if len(args[3:]) > 0 {
+				if model, ok := args[3].(int); ok {
+					pluralCount = model
+				}
 			}
 		}
 	}
@@ -115,6 +135,7 @@ func LocalizeMessage(args ...interface{}) string {
 	msg, err := localizer.Localize(&i18n.LocalizeConfig{
 		DefaultMessage: message,
 		TemplateData:   templateData,
+		PluralCount:    pluralCount,
 	})
 
 	// fix go-i18n extract

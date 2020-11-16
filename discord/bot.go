@@ -5,15 +5,13 @@ import (
 	"github.com/denverquane/amongusdiscord/game"
 	"github.com/denverquane/amongusdiscord/storage"
 	"log"
+	"os"
 	"strings"
 	"sync"
 )
 
-const DefaultPort = "8123"
-
 type Bot struct {
-	url          string
-	internalPort string
+	url string
 
 	//mapping of socket connections to the game connect codes
 	ConnsToGames map[string]string
@@ -40,7 +38,7 @@ var Commit string
 
 // MakeAndStartBot does what it sounds like
 //TODO collapse these fields into proper structs?
-func MakeAndStartBot(version, commit, token, token2, url, internalPort, emojiGuildID string, numShards, shardID int, redisInterface *RedisInterface, storageInterface *storage.StorageInterface, logPath string, timeoutSecs int) *Bot {
+func MakeAndStartBot(version, commit, token, token2, url, emojiGuildID string, numShards, shardID int, redisInterface *RedisInterface, storageInterface *storage.StorageInterface, logPath string, timeoutSecs int) *Bot {
 	Version = version
 	Commit = commit
 
@@ -72,7 +70,6 @@ func MakeAndStartBot(version, commit, token, token2, url, internalPort, emojiGui
 
 	bot := Bot{
 		url:          url,
-		internalPort: internalPort,
 		ConnsToGames: make(map[string]string),
 		StatusEmojis: emptyStatusEmojis(),
 
@@ -84,12 +81,14 @@ func MakeAndStartBot(version, commit, token, token2, url, internalPort, emojiGui
 		logPath:          logPath,
 		captureTimeout:   timeoutSecs,
 	}
+	dg.LogLevel = discordgo.LogInformational
 
 	dg.AddHandler(bot.handleVoiceStateChange)
 	// Register the messageCreate func as a callback for MessageCreate events.
 	dg.AddHandler(bot.handleMessageCreate)
 	dg.AddHandler(bot.handleReactionGameStartAdd)
 	dg.AddHandler(bot.newGuild(emojiGuildID))
+	dg.AddHandler(bot.leaveGuild)
 
 	dg.Identify.Intents = discordgo.MakeIntent(discordgo.IntentsGuildVoiceStates | discordgo.IntentsGuildMessages | discordgo.IntentsGuilds | discordgo.IntentsGuildMessageReactions)
 
@@ -110,25 +109,30 @@ func MakeAndStartBot(version, commit, token, token2, url, internalPort, emojiGui
 		}
 	}
 
+	bot.RedisInterface.SetVersionAndCommit(Version, Commit)
+
+	go StartHealthCheckServer("8080")
+
+	log.Println("Finished identifying to the Discord API. Now ready for incoming events")
+
+	listeningTo := os.Getenv("AUTOMUTEUS_LISTENING")
+	if listeningTo == "" {
+		listeningTo = ".au help"
+	}
+
 	status := &discordgo.UpdateStatusData{
 		IdleSince: nil,
-		Game: &discordgo.Game{
-			Name: ".au help",
-			Type: discordgo.GameTypeListening,
-		},
+		Activities: &[]discordgo.Game{
+			{
+				Name: listeningTo,
+				Type: discordgo.GameTypeListening,
+			}},
 		AFK:    false,
 		Status: "",
 	}
-
 	dg.UpdateStatusComplex(*status)
 
-	bot.Run(internalPort)
-
 	return &bot
-}
-
-func (bot *Bot) Run(port string) {
-	go bot.socketioServer(port)
 }
 
 func (bot *Bot) GracefulClose() {
@@ -142,6 +146,7 @@ func (bot *Bot) GracefulClose() {
 func (bot *Bot) Close() {
 	bot.SessionManager.Close()
 	bot.RedisInterface.Close()
+	bot.StorageInterface.Close()
 }
 
 func (bot *Bot) PurgeConnection(socketID string) {
@@ -168,12 +173,7 @@ func (bot *Bot) gracefulShutdownWorker(guildID, connCode string) {
 	}
 	bot.gracefulEndGame(gsr)
 
-	bot.RedisInterface.AppendToActiveGames(gsr.GuildID, gsr.ConnectCode)
-
 	log.Println("Finished gracefully shutting down")
-
-	//this is only for forceful shutdown
-	//bot.RedisInterface.DeleteDiscordGameState(dgs)
 }
 
 func (bot *Bot) newGuild(emojiGuildID string) func(s *discordgo.Session, m *discordgo.GuildCreate) {
@@ -203,7 +203,7 @@ func (bot *Bot) newGuild(emojiGuildID string) func(s *discordgo.Session, m *disc
 			bot.addAllMissingEmojis(s, m.Guild.ID, false, allEmojis)
 		}
 
-		games := bot.RedisInterface.LoadAllActiveGamesAndDelete(m.Guild.ID)
+		games := bot.RedisInterface.LoadAllActiveGames(m.Guild.ID)
 
 		for _, connCode := range games {
 			gsr := GameStateRequest{
@@ -211,7 +211,10 @@ func (bot *Bot) newGuild(emojiGuildID string) func(s *discordgo.Session, m *disc
 				ConnectCode: connCode,
 			}
 			lock, dgs := bot.RedisInterface.GetDiscordGameStateAndLock(gsr)
-			if lock != nil && dgs != nil && !dgs.Subscribed && dgs.ConnectCode != "" {
+			for lock == nil {
+				lock, dgs = bot.RedisInterface.GetDiscordGameStateAndLock(gsr)
+			}
+			if dgs != nil && dgs.ConnectCode != "" {
 				log.Println("Resubscribing to Redis events for an old game: " + connCode)
 				killChan := make(chan EndGameMessage)
 				go bot.SubscribeToGameByConnectCode(gsr.GuildID, dgs.ConnectCode, killChan)
@@ -222,19 +225,19 @@ func (bot *Bot) newGuild(emojiGuildID string) func(s *discordgo.Session, m *disc
 				bot.ChannelsMapLock.Lock()
 				bot.EndGameChannels[dgs.ConnectCode] = killChan
 				bot.ChannelsMapLock.Unlock()
-			} else if lock != nil {
-				//log.Println("UNLOCKING")
-				lock.Release()
 			}
+			lock.Release(ctx)
 		}
+	}
+}
 
-		if len(games) == 0 {
-			dsg := NewDiscordGameState(m.Guild.ID)
+func (bot *Bot) leaveGuild(s *discordgo.Session, m *discordgo.GuildDelete) {
+	log.Println("Bot was removed from Guild " + m.ID)
+	bot.RedisInterface.LeaveUniqueGuildCounter(m.ID, Version)
 
-			//put an empty entry in Redis
-			bot.RedisInterface.SetDiscordGameState(dsg, nil)
-		}
-
+	err := bot.StorageInterface.DeleteGuildSettings(m.ID)
+	if err != nil {
+		log.Println(err)
 	}
 }
 
@@ -269,8 +272,8 @@ func (bot *Bot) linkPlayer(s *discordgo.Session, dgs *DiscordGameState, args []s
 		auData, found = dgs.AmongUsData.GetByName(combinedArgs)
 	}
 	if found {
-		found = dgs.AttemptPairingByUserIDs(auData, map[string]interface{}{userID: ""})
-		if found {
+		foundID := dgs.AttemptPairingByUserIDs(auData, map[string]interface{}{userID: ""})
+		if foundID != "" {
 			log.Printf("Successfully linked %s to a color\n", userID)
 			err := bot.RedisInterface.AddUsernameLink(dgs.GuildID, userID, auData.Name)
 			if err != nil {
@@ -323,7 +326,9 @@ func (bot *Bot) forceEndGame(gsr GameStateRequest) {
 	dgs.AmongUsData.UpdatePhase(game.LOBBY)
 	dgs.AmongUsData.SetRoomRegion("", "")
 
-	lock.Release()
+	lock.Release(ctx)
+
+	bot.RedisInterface.RemoveOldGame(dgs.GuildID, dgs.ConnectCode)
 
 	//TODO this shouldn't be necessary with the TTL of the keys, but it can't hurt to clean up...
 	bot.RedisInterface.DeleteDiscordGameState(dgs)

@@ -16,10 +16,10 @@
     </a>
 </p>
 <p align="center">
-    <a href="pulls" alt="Pulls">
+    <a href="https://hub.docker.com/repository/docker/denverquane/amongusdiscord" alt="Pulls">
         <img src="https://img.shields.io/docker/pulls/denverquane/amongusdiscord.svg" />
     </a>
-    <a href="stars" alt="Stars">
+    <a href="https://hub.docker.com/repository/docker/denverquane/amongusdiscord" alt="Stars">
         <img src="https://img.shields.io/docker/stars/denverquane/amongusdiscord.svg" />
     </a>
 </p>
@@ -141,22 +141,21 @@ Heroku hosting steps are are not yet updated for v3.0+ of AutoMuteUs, and as suc
 ### Required
 
 - `DISCORD_BOT_TOKEN`: The Bot Token used by the bot to authenticate with Discord.
-- `REDIS_ADDRESS`: The host and port at which your Redis database instance is accessible. Ex: `192.168.1.42:6379`
+- `REDIS_ADDR`: The host and port at which your Redis database instance is accessible. Ex: `192.168.1.42:6379`
 
 ### Optional
 
 - `DISCORD_BOT_TOKEN_2`: A second Bot Token to be used to distribute the mute/deafen requests to Discord.
   If you play in larger groups of 8+ people, this is recommended to not be rate-limited (delayed) by Discord when rounds change!
 - `EMOJI_GUILD_ID`: If your bot is a member of multiple guilds, this ID can be used to specify the single guild that it should use for emojis (no need to add the emojis to ALL servers).
-- `PORT`: The **internal** port the Bot will use for incoming socket.io communications. Defaults to 8123.
-- `HOST`: The **externally-accessible URL** for the discord bot. For example, `http://test.com:8123`.
+- `HOST`: The **externally-accessible URL** for Galactus. For example, `http://test.com:8123`.
   This is used to provide the linking URI to the capture, via the Direct Message the bot sends you when typing `.au new`.
   **You must specify `http://` or `https://` accordingly, and specify the port if non-8123. For example, `https://your-app.herokuapp.com:443`**
 - `SERVICE_PORT`: Port used for graceful shutdowns and stats via HTTP GET. Defaults to 5000
-- `CONFIG_PATH`: Alternate filesystem path for guild and user config files. Defaults to `./`
 - `LOG_PATH`: Filesystem path for log files. Defaults to `./`
 - `CAPTURE_TIMEOUT`: How many seconds of no capture events received before the Bot will terminate the associated game/connection. Defaults to 36000 seconds.
-- `REDIS_PASSWORD`: Your Redis database password, if necessary.
+- `REDIS_PASS`: Your Redis database password, if necessary.
+- `AUTOMUTEUS_LISTENING`: What the bot displays it is "Listening to" in the online presence message. Recommend putting your custom command prefix here
 
 ### HIGHLY advanced. Probably don't ever touch these!
 

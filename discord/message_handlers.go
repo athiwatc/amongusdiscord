@@ -15,13 +15,20 @@ import (
 
 const downloadURL = "https://github.com/denverquane/amonguscapture/releases/latest/download/amonguscapture.exe"
 
-var urlregex = regexp.MustCompile(`^http(?P<secure>s?)://(?P<host>[\w.-]+)(?::(?P<port>\d+))/?$`)
+var urlregex = regexp.MustCompile(`^http(?P<secure>s?)://(?P<host>[\w.-]+)(?::(?P<port>\d+))?/?$`)
 
 func (bot *Bot) handleMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Ignore all messages created by the bot itself
 	if m.Author.ID == s.State.User.ID {
 		return
 	}
+
+	lock := bot.RedisInterface.LockSnowflake(m.ID)
+	//couldn't obtain lock; bail bail bail!
+	if lock == nil {
+		return
+	}
+	defer lock.Release(ctx)
 
 	g, err := s.State.Guild(m.GuildID)
 	if err != nil {
@@ -33,13 +40,13 @@ func (bot *Bot) handleMessageCreate(s *discordgo.Session, m *discordgo.MessageCr
 	sett := bot.StorageInterface.GetGuildSettings(m.GuildID)
 	prefix := sett.GetCommandPrefix()
 
-	if strings.HasPrefix(m.Content, "<@!"+s.State.User.ID) {
+	if strings.Contains(m.Content, "<@!"+s.State.User.ID+">") {
 		s.ChannelMessageSend(m.ChannelID, sett.LocalizeMessage(&i18n.Message{
 			ID:    "message_handlers.handleMessageCreate.respondPrefix",
-			Other: "I respond to the prefix {{.Prefix}}",
+			Other: "I respond to the prefix {{.CommandPrefix}}",
 		},
 			map[string]interface{}{
-				"Prefix": prefix,
+				"CommandPrefix": prefix,
 			}))
 		return
 	}
@@ -69,7 +76,7 @@ func (bot *Bot) handleMessageCreate(s *discordgo.Session, m *discordgo.MessageCr
 				// prefix is sent by mistake
 				return
 			} else {
-				embed := helpResponse(isAdmin, isPermissioned, Version, prefix, AllCommands, sett)
+				embed := helpResponse(isAdmin, isPermissioned, prefix, AllCommands, sett)
 				s.ChannelMessageSendEmbed(m.ChannelID, &embed)
 			}
 		} else {
@@ -89,6 +96,12 @@ func (bot *Bot) handleReactionGameStartAdd(s *discordgo.Session, m *discordgo.Me
 	if m.UserID == s.State.User.ID {
 		return
 	}
+	lock := bot.RedisInterface.LockSnowflake(m.MessageID + m.UserID + m.Emoji.ID)
+	//couldn't obtain lock; bail bail bail!
+	if lock == nil {
+		return
+	}
+	defer lock.Release(ctx)
 
 	g, err := s.State.Guild(m.GuildID)
 	if err != nil {
@@ -157,6 +170,13 @@ func (bot *Bot) handleReactionGameStartAdd(s *discordgo.Session, m *discordgo.Me
 //relevant discord api requests are fully applied successfully. Otherwise, we can issue multiple requests for
 //the same mute/unmute, erroneously
 func (bot *Bot) handleVoiceStateChange(s *discordgo.Session, m *discordgo.VoiceStateUpdate) {
+	lock := bot.RedisInterface.LockSnowflake(m.ChannelID + m.UserID + m.SessionID)
+	//couldn't obtain lock; bail bail bail!
+	if lock == nil {
+		return
+	}
+	defer lock.Release(ctx)
+
 	sett := bot.StorageInterface.GetGuildSettings(m.GuildID)
 	gsr := GameStateRequest{
 		GuildID:      m.GuildID,
@@ -171,7 +191,7 @@ func (bot *Bot) handleVoiceStateChange(s *discordgo.Session, m *discordgo.VoiceS
 	g, err := s.State.Guild(dgs.GuildID)
 
 	if err != nil || g == nil {
-		lock.Release()
+		lock.Release(ctx)
 		return
 	}
 
@@ -186,7 +206,7 @@ func (bot *Bot) handleVoiceStateChange(s *discordgo.Session, m *discordgo.VoiceS
 
 	auData, found := dgs.AmongUsData.GetByName(userData.InGameName)
 	//only actually tracked if we're in a tracked channel AND linked to a player
-	tracked = tracked && found
+	tracked = tracked && (found || userData.GetPlayerName() == game.SpectatorPlayerName)
 	mute, deaf := sett.GetVoiceState(auData.IsAlive, tracked, dgs.AmongUsData.GetPhase())
 	//check the userdata is linked here to not accidentally undeafen music bots, for example
 	if found && (userData.ShouldBeDeaf != deaf || userData.ShouldBeMute != mute) && (mute != m.Mute || deaf != m.Deaf) {
@@ -207,31 +227,41 @@ func (bot *Bot) handleVoiceStateChange(s *discordgo.Session, m *discordgo.VoiceS
 }
 
 func (bot *Bot) handleNewGameMessage(s *discordgo.Session, m *discordgo.MessageCreate, g *discordgo.Guild, sett *storage.GuildSettings, room, region string) {
-	initialTracking := make([]TrackingChannel, 0)
-
 	lock, dgs := bot.RedisInterface.GetDiscordGameStateAndLock(GameStateRequest{
 		GuildID:     m.GuildID,
 		TextChannel: m.ChannelID,
 	})
-	if lock == nil {
-		log.Println("Couldn't obtain redis dgs lock for new game! This is really bad...")
-		return
+	retries := 0
+	for lock == nil {
+		if retries > 10 {
+			log.Println("DEADLOCK in obtaining game state lock, upon calling new")
+			s.ChannelMessageSend(m.ChannelID, "I wasn't able to make a new game, maybe try in a different text channel?")
+			return
+		}
+		retries++
+		lock, dgs = bot.RedisInterface.GetDiscordGameStateAndLock(GameStateRequest{
+			GuildID:     m.GuildID,
+			TextChannel: m.ChannelID,
+		})
 	}
 
 	//TODO need to send a message to the capture re-questing all the player/game states. Otherwise,
 	//we don't have enough info to go off of when remaking the game...
 
-	if dgs.GameStateMsg.MessageChannelID != "" {
+	if dgs.GameStateMsg.MessageID != "" {
 		if v, ok := bot.EndGameChannels[dgs.ConnectCode]; ok {
 			v <- EndGameMessage{EndGameType: EndAndWipe}
 		}
 		delete(bot.EndGameChannels, dgs.ConnectCode)
+
 		dgs.Reset()
 	}
 
 	connectCode := generateConnectCode(m.GuildID)
 
 	dgs.ConnectCode = connectCode
+
+	bot.RedisInterface.RefreshActiveGame(m.GuildID, connectCode)
 
 	killChan := make(chan EndGameMessage)
 
@@ -254,7 +284,11 @@ func (bot *Bot) handleNewGameMessage(s *discordgo.Session, m *discordgo.MessageC
 		port := ":" + match[urlregex.SubexpIndex("port")]
 
 		if port == ":" {
-			port = ":" + bot.internalPort
+			if secure {
+				port = ":443"
+			} else {
+				port = ":80"
+			}
 		}
 
 		insecure := "?insecure"
@@ -323,40 +357,32 @@ func (bot *Bot) handleNewGameMessage(s *discordgo.Session, m *discordgo.MessageC
 		log.Println(err)
 	}
 
-	//defaultTracked := guild.guildSettings.GetDefaultTrackedChannel()
-	for _, channel := range channels {
-		//if channel.Type == discordgo.ChannelTypeGuildVoice {
-		//	if channel.ID == defaultTracked || strings.ToLower(channel.Name) == strings.ToLower(defaultTracked) {
-		//		initialTracking = append(initialTracking, TrackingChannel{
-		//			ChannelID:   channel.ID,
-		//			ChannelName: channel.Name,
-		//			forGhosts:   false,
-		//		})
-		//		guild.Log(fmt.Sprintf("Found initial default channel specified in config: ID %s, Name %s\n", channel.ID, channel.Name))
-		//	}
-		//}
-		for _, v := range g.VoiceStates {
-			//if the User is detected in a voice channel
-			if v.UserID == m.Author.ID {
+	tracking := TrackingChannel{}
 
-				//once we find the channel by ID
-				if channel.Type == discordgo.ChannelTypeGuildVoice {
+	//loop over all the channels in the discord and cross-reference with the one that the .au new author is in
+	for _, channel := range channels {
+		if channel.Type == discordgo.ChannelTypeGuildVoice {
+			for _, v := range g.VoiceStates {
+				//if the User who typed au new is in a voice channel
+				if v.UserID == m.Author.ID {
+					//once we find the voice channel
 					if channel.ID == v.ChannelID {
-						initialTracking = append(initialTracking, TrackingChannel{
+						tracking = TrackingChannel{
 							ChannelID:   channel.ID,
 							ChannelName: channel.Name,
-						})
+						}
 						log.Print(fmt.Sprintf("User that typed new is in the \"%s\" voice channel; using that for Tracking", channel.Name))
+						break
 					}
 				}
 			}
 		}
 	}
 
-	bot.handleGameStartMessage(s, m, sett, room, region, initialTracking, g, connectCode)
+	bot.handleGameStartMessage(s, m, sett, room, region, tracking, g, connectCode)
 }
 
-func (bot *Bot) handleGameStartMessage(s *discordgo.Session, m *discordgo.MessageCreate, sett *storage.GuildSettings, room string, region string, channels []TrackingChannel, g *discordgo.Guild, connCode string) {
+func (bot *Bot) handleGameStartMessage(s *discordgo.Session, m *discordgo.MessageCreate, sett *storage.GuildSettings, room string, region string, channel TrackingChannel, g *discordgo.Guild, connCode string) {
 	lock, dgs := bot.RedisInterface.GetDiscordGameStateAndLock(GameStateRequest{
 		GuildID:     m.GuildID,
 		TextChannel: m.ChannelID,
@@ -372,16 +398,14 @@ func (bot *Bot) handleGameStartMessage(s *discordgo.Session, m *discordgo.Messag
 
 	dgs.Running = true
 
-	for _, channel := range channels {
-		if channel.ChannelName != "" {
-			dgs.Tracking = TrackingChannel{
-				ChannelID:   channel.ChannelID,
-				ChannelName: channel.ChannelName,
-			}
-			for _, v := range g.VoiceStates {
-				if v.ChannelID == channel.ChannelID {
-					dgs.checkCacheAndAddUser(g, s, v.UserID)
-				}
+	if channel.ChannelName != "" {
+		dgs.Tracking = TrackingChannel{
+			ChannelID:   channel.ChannelID,
+			ChannelName: channel.ChannelName,
+		}
+		for _, v := range g.VoiceStates {
+			if v.ChannelID == channel.ChannelID {
+				dgs.checkCacheAndAddUser(g, s, v.UserID)
 			}
 		}
 	}
@@ -391,11 +415,5 @@ func (bot *Bot) handleGameStartMessage(s *discordgo.Session, m *discordgo.Messag
 	bot.RedisInterface.SetDiscordGameState(dgs, lock)
 
 	log.Println("Added self game state message")
-
-	if dgs.AmongUsData.GetPhase() != game.MENU {
-		for _, e := range bot.StatusEmojis[true] {
-			go dgs.AddReaction(s, e.FormatForReaction())
-		}
-		dgs.AddReaction(s, "❌")
-	}
+	go dgs.AddAllReactions(bot.SessionManager.GetPrimarySession(), bot.StatusEmojis[true])
 }

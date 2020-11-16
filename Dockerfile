@@ -30,21 +30,23 @@ FROM alpine:3.12.1 AS final
 # * App directory to allow mounting volumes
 RUN addgroup -g 1000 bot && \
     adduser -HD -u 1000 -G bot bot && \
-    mkdir -p /app/logs /app/config && \
+    mkdir -p /app/logs /app/locales && \
     chown -R bot:bot /app
 USER bot
+WORKDIR /app
 
-# Import the compiled executable from the first stage.
+# Import the compiled executable and locales.
 COPY --from=builder /app /app
+COPY ./locales/ /app/locales
 
-# Port used for capture program to report back
-EXPOSE 8123
+# Port used for health/liveliness checks
+EXPOSE 8080
 # Port used for application command and control
 EXPOSE 5000
 
-ENV CONFIG_PATH="/app/config" \
+ENV LOCALE_PATH="/app/locales" \
     LOG_PATH="/app/logs"
-VOLUME ["/app/config", "/app/logs"]
+VOLUME ["/app/locales", "/app/logs"]
 
 # Run the compiled binary.
-ENTRYPOINT ["/app/app"]
+ENTRYPOINT ["./app"]
