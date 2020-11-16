@@ -109,7 +109,7 @@ func discordMainWrapper() error {
 		url = DefaultURL
 	}
 
-	servicePort := os.Getenv("SERVICE_PORT")
+	servicePort := os.Getenv("PORT")
 	if servicePort == "" {
 		log.Printf("[Info] No SERVICE_PORT provided. Defaulting to %s\n", DefaultServicePort)
 		servicePort = DefaultServicePort
