@@ -20,7 +20,7 @@ require (
 	golang.org/x/sys v0.0.0-20201113135734-0a15ea8d9b02 // indirect
 	golang.org/x/text v0.3.4
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
-	google.golang.org/protobuf v1.25.0 // indirect
+	google.golang.org/protobuf v1.33.0 // indirect
 )
 
 replace github.com/bwmarrin/discordgo v0.22.0 => github.com/denverquane/discordgo v0.24.1
